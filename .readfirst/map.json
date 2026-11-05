@@ -1,0 +1,1420 @@
+{
+  "format": "readfirst/map@1",
+  "groups": [
+    {
+      "id": "backend",
+      "title": "NestJS HTTP API: dashboard routes, public API, Stripe webhook, auth; thin controllers over the shared libraries",
+      "files": [
+        "apps/backend/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build:backend",
+          "why": "compiles the API app and the libraries it imports"
+        },
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ],
+      "risks": [
+        {
+          "text": "POST /integrations/function runs provider[body.name] with the channel token as first argument; it is only safe because isDashboardCallable limits it to @Tool / @DashboardFunction methods, so never skip that gate or decorate a helper that takes a token.",
+          "files": [
+            "apps/backend/src/api/routes/integrations.controller.ts"
+          ]
+        },
+        {
+          "text": "Login skips the bcrypt compare when the email is unknown (`!user ||` at auth.service.ts:82), so an unknown account answers faster than a wrong password and reveals which emails are registered.",
+          "files": [
+            "apps/backend/src/services/auth/auth.service.ts"
+          ]
+        },
+        {
+          "text": "POST /agent compares body.apiKey with process.env.AGENT_API_KEY using !== (public.controller.ts:47-49), which is not constant-time, and answers 200 with an empty body on a wrong key; use crypto.timingSafeEqual and an explicit 401 if you touch it.",
+          "files": [
+            "apps/backend/src/api/routes/public.controller.ts"
+          ]
+        },
+        {
+          "text": "The Stripe webhook needs the raw bytes: main.ts sets rawBody:true and stripe.controller.ts hands req.rawBody to constructEvent; a body parser or a re-serialised body added in front makes every signature check fail and billing events are lost.",
+          "files": [
+            "apps/backend/src/main.ts",
+            "apps/backend/src/api/routes/stripe.controller.ts"
+          ]
+        },
+        {
+          "text": "nginx forwards the custom headers Auth, Showorg, Impersonate, Onboarding, Activate and Reload from the browser to the API; a new header the backend reads must be added to the proxy list in var/docker/nginx.conf or it silently never arrives in the container deployment.",
+          "files": [
+            "apps/backend/src/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "orchestrator",
+      "title": "Temporal worker (workflows and activities) for scheduled posting, token refresh, email, clipping, plus the commands CLI app",
+      "files": [
+        "apps/orchestrator/**",
+        "apps/commands/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build:orchestrator",
+          "why": "compiles the worker, workflow bundle and activities"
+        }
+      ],
+      "risks": [
+        {
+          "text": "Post workflows are versioned files (post.workflow.v1.0.1 ... v1.1.2) all re-exported from workflows/index.ts, and posts.service.ts starts one by its name (postWorkflowV112); editing an old version breaks runs already in flight, so add a new version and change the caller.",
+          "files": [
+            "apps/orchestrator/src/workflows/**"
+          ]
+        },
+        {
+          "text": "Activity signatures are called by workflows already in flight; changing an activity parameter fails them on replay, so add a new activity and a new workflow version that uses it.",
+          "files": [
+            "apps/orchestrator/src/activities/**"
+          ]
+        },
+        {
+          "text": "Post activities retry (maximumAttempts 3, 10 minute timeout in the post workflows); anything a provider does before it returns must be safe to run twice or the post is published twice.",
+          "files": [
+            "apps/orchestrator/src/workflows/post-workflows/post.workflow.v1.0.2.ts",
+            "apps/orchestrator/src/activities/post.activity.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "frontend",
+      "title": "Next.js app (port 4200): calendar, post editor, provider previews, auth and the public post preview",
+      "files": [
+        "apps/frontend/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build:frontend",
+          "why": "next build of the app, the only automated frontend check; there are no frontend tests"
+        }
+      ],
+      "risks": [
+        {
+          "text": "The calendar must keep one react-dnd manager: DNDProvider passes window as the context, and a second HTML5 backend after a remount throws \"Cannot have two HTML5 backends at the same time\".",
+          "files": [
+            "apps/frontend/src/components/launches/helpers/dnd.provider.tsx"
+          ]
+        },
+        {
+          "text": "The public preview keeps blank lines only through the `preview` class next to whitespace-pre-wrap (fix 82ab112); removing either class collapses the empty lines authors wrote, and the HTML must still come from sanitizePostContent.",
+          "files": [
+            "apps/frontend/src/components/preview/post.content.client.tsx",
+            "apps/frontend/src/app/(app)/(preview)/p/[id]/page.tsx"
+          ]
+        },
+        {
+          "text": "NEXT_PUBLIC_* values are inlined in browser code at build time; the layout passes backend URL, upload directory and OAuth labels down as props read on the server, so new client code should take them from those props instead of reading process.env.NEXT_PUBLIC_* itself (docker-compose.yaml sets them at run time only).",
+          "files": [
+            "apps/frontend/src/app/(provider)/layout.tsx"
+          ]
+        },
+        {
+          "text": "dangerouslySetInnerHTML is used in several provider previews and the agent chat (e.g. tiktok.preview.tsx:78, agent.chat.tsx:186); each caller has to sanitise the post text first or it injects author HTML into the page.",
+          "files": [
+            "apps/frontend/src/components/new-launch/providers/**",
+            "apps/frontend/src/components/agents/agent.chat.tsx"
+          ]
+        },
+        {
+          "text": "next.config.js sets reactStrictMode:false (line 20), so effects that call APIs are never run twice in dev; turning it on would expose effects that are not safe to repeat. Also CLAUDE.md calls the frontend Vite but it is Next.js (apps/frontend/AGENTS.md warns its Next version differs from what you know).",
+          "files": [
+            "apps/frontend/next.config.js"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "extension-sdk",
+      "title": "Browser extension (Vite, cookie-based platform auth) and the @postiz/node public API SDK",
+      "files": [
+        "apps/extension/**",
+        "apps/sdk/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build:extension",
+          "why": "vite build and zip of the extension"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "lib-database",
+      "title": "Prisma schema, repositories and services for users, organizations, integrations, posts, subscriptions and stats",
+      "files": [
+        "libraries/nestjs-libraries/src/database/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run prisma-generate",
+          "why": "regenerates the Prisma client from schema.prisma; the postinstall step, so types break without it"
+        },
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ],
+      "risks": [
+        {
+          "text": "The schema is applied with `prisma db push` (prisma-db-push, used by pm2-run) and there is no migrations folder, so renaming or dropping a field or changing its type can drop production data; prisma-reset uses --force-reset and must never run on a live database. Code only sees new fields after prisma-generate.",
+          "files": [
+            "libraries/nestjs-libraries/src/database/prisma/schema.prisma"
+          ]
+        },
+        {
+          "text": "disconnectChannel updates the Integration with no select and returns the whole row, tokens included; setTimes (line 122) shows the narrow `select` pattern, and a controller must not pass the raw row to the client.",
+          "files": [
+            "libraries/nestjs-libraries/src/database/prisma/integrations/integration.repository.ts"
+          ]
+        },
+        {
+          "text": "refreshTokens must `continue` past a channel whose refresh failed and notify only when refreshNeeded flipped the flag, otherwise users get one notification per failed attempt or the remaining channels stop refreshing (history 5a5e50f, 61cf1dd).",
+          "files": [
+            "libraries/nestjs-libraries/src/database/prisma/integrations/integration.service.ts"
+          ]
+        },
+        {
+          "text": "getLastPublishDate counts PUBLISHED posts, QUEUE posts due within 5 minutes and recurring posts separately, and setStreak swallows every error; changing one query changes who loses a streak (history acf6c24); invite acceptance for a user already in the org must stay a no-op (history 673fac0).",
+          "files": [
+            "libraries/nestjs-libraries/src/database/prisma/organizations/organization.repository.ts"
+          ]
+        },
+        {
+          "text": "deleteSubscription awaits modifySubscription with no try/catch and is reached from webhooks, and isManagedBy keeps Stripe and RevenueCat rows from overwriting each other; a throw here leaves a paying customer half-updated.",
+          "files": [
+            "libraries/nestjs-libraries/src/database/prisma/subscriptions/subscription.service.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lib-integrations-core",
+      "title": "Provider registry (integration.manager.ts), token refresh service and the decorators for dashboard-callable provider methods",
+      "files": [
+        "libraries/nestjs-libraries/src/integrations/*.ts"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ],
+      "risks": [
+        {
+          "text": "isDashboardCallable is the only gate for POST /integrations/function: only @Tool methods and @DashboardFunction ones may run with the channel token; any new decorator or method list must keep that default-deny.",
+          "files": [
+            "libraries/nestjs-libraries/src/integrations/integration.manager.ts"
+          ]
+        },
+        {
+          "text": "A new provider must be added to socialIntegrationList in integration.manager.ts (line 43) and also gets an icon under apps/frontend/public/icons/platforms and a frontend provider component; missing one shows a channel that cannot be connected or previewed.",
+          "files": [
+            "libraries/nestjs-libraries/src/integrations/integration.manager.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lib-providers",
+      "title": "One class per social network implementing SocialProvider: OAuth, posting, error classification, tools",
+      "files": [
+        "libraries/nestjs-libraries/src/integrations/social/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ],
+      "risks": [
+        {
+          "text": "Media paths are user-influenced: local files must be read through localMediaPath (only inside UPLOAD_DIRECTORY, resolve() before the prefix test) and remote URLs through the SSRF-safe axios or getSsrfSafeDispatcher (as youtube.provider.ts:469 does); raw fs or fetch reopens local-file read and SSRF (history 12db9bd).",
+          "files": [
+            "libraries/nestjs-libraries/src/integrations/social.abstract.ts",
+            "libraries/nestjs-libraries/src/integrations/social/youtube.provider.ts"
+          ]
+        },
+        {
+          "text": "Provider errors are classified by substring of the response body in handleErrors (refresh-token / bad-body / retry); wording must be matched exactly, e.g. TikTok business \"The access token is invalid\" must stay a refresh-token error and YouTube defaultVideoInsertPerDayPerProject names the daily quota; reordering checks changes the class (history 97ee8b9, 30e1f83, 0c9d394).",
+          "files": [
+            "libraries/nestjs-libraries/src/integrations/social.abstract.ts",
+            "libraries/nestjs-libraries/src/integrations/social/tiktok.business.provider.ts",
+            "libraries/nestjs-libraries/src/integrations/social/youtube.provider.ts"
+          ]
+        },
+        {
+          "text": "Bluesky must read the identifier through loginIdentifier (trim and strip a leading @) on every path: login, reconnect, auto-repost and auto-plug; a raw body.identifier is rejected by Bluesky as an email (history 717a1b3, 1e63edd).",
+          "files": [
+            "libraries/nestjs-libraries/src/integrations/social/bluesky.provider.ts"
+          ]
+        },
+        {
+          "text": "Instagram can reject media_publish after it already created the media, so the code probes container and media status to recover; re-posting instead duplicates the post (history ae0a642). TikTok business must fail early with a BadBody when the OAuth redirect has no auth_code (history 15c4ce1).",
+          "files": [
+            "libraries/nestjs-libraries/src/integrations/social/instagram.provider.ts",
+            "libraries/nestjs-libraries/src/integrations/social/tiktok.business.provider.ts"
+          ]
+        },
+        {
+          "text": "Methods that take the channel token as first argument and are decorated @Tool or @DashboardFunction become callable from the browser via /integrations/function; decorate only methods that are safe for any member of the organization (history 9383f5b).",
+          "files": [
+            "libraries/nestjs-libraries/src/integrations/social/instagram.provider.ts",
+            "libraries/nestjs-libraries/src/integrations/social/youtube.provider.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lib-chat-agent",
+      "title": "MCP server and Mastra agent tools (scheduling, uploads), the inline upload widget and the AI post-graph",
+      "files": [
+        "libraries/nestjs-libraries/src/chat/**",
+        "libraries/nestjs-libraries/src/agent/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ],
+      "risks": [
+        {
+          "text": "Tools receive the organization through checkAuth() reading requestContext or the AsyncLocalStorage fallback; a tool that skips it runs without a tenant, and a new auth path in start.mcp.ts (pos_ OAuth, API key, psh_ relay) must resolve an organization or answer 401.",
+          "files": [
+            "libraries/nestjs-libraries/src/chat/auth.context.ts",
+            "libraries/nestjs-libraries/src/chat/start.mcp.ts"
+          ]
+        },
+        {
+          "text": "Attachments in the schedule tool must pass validUrlPath and validUrlExtension (line 21-23); accepting a raw path or thumbnail URL lets a caller point the publisher at arbitrary URLs or local files. A { path, thumbnail } cover feature was already reverted once (history 3205ce1, later redone as alt/thumbnailTimestamp c1f824c).",
+          "files": [
+            "libraries/nestjs-libraries/src/chat/tools/integration.schedule.post.ts"
+          ]
+        },
+        {
+          "text": "upload.widget.ts is one inline HTML/JS string served as ui://postiz/upload; the adjust tooltip had to be kept inside it (history 08c8433), and file names and media paths are interpolated into the page, so escape them.",
+          "files": [
+            "libraries/nestjs-libraries/src/chat/ui/upload.widget.ts"
+          ]
+        },
+        {
+          "text": "A tool not listed in tool.list.ts (loaded by LoadToolsService through moduleRef) is invisible to MCP and the agent, and coreToolNames decides what self-hosted relays expose.",
+          "files": [
+            "libraries/nestjs-libraries/src/chat/load.tools.service.ts"
+          ]
+        },
+        {
+          "text": "agent.graph.service makes several paid ChatOpenAI/image calls per run on a module-level model; do not call it per request or inside loops.",
+          "files": [
+            "libraries/nestjs-libraries/src/agent/agent.graph.service.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lib-services",
+      "title": "Shared services: Stripe billing and payment providers, uploads, OpenAI, emails, DTOs and the others used by backend and orchestrator",
+      "files": [
+        "libraries/nestjs-libraries/src/services/**",
+        "libraries/nestjs-libraries/src/upload/**",
+        "libraries/nestjs-libraries/src/openai/**",
+        "libraries/nestjs-libraries/src/dtos/**",
+        "libraries/nestjs-libraries/src/emails/**",
+        "libraries/nestjs-libraries/src/redis/**",
+        "libraries/nestjs-libraries/src/3rdparties/**",
+        "libraries/nestjs-libraries/src/deepgram/**",
+        "libraries/nestjs-libraries/src/newsletter/**",
+        "libraries/nestjs-libraries/src/sentry/**",
+        "libraries/nestjs-libraries/src/short-linking/**",
+        "libraries/nestjs-libraries/src/temporal/**",
+        "libraries/nestjs-libraries/src/throttler/**",
+        "libraries/nestjs-libraries/src/track/**",
+        "libraries/nestjs-libraries/src/user/**",
+        "libraries/nestjs-libraries/src/videos/**",
+        "libraries/nestjs-libraries/*.json",
+        "libraries/nestjs-libraries/*.md"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ],
+      "risks": [
+        {
+          "text": "Stripe webhook handling runs through PaymentService.webhook > validateWebhook (constructEvent on the raw body) > processWebhook; handlers there must not throw or leave billing half applied, and the same event can arrive twice or out of order. Amounts are integer cents (Math.round(value*100), usd fixed in applyCoupon).",
+          "files": [
+            "libraries/nestjs-libraries/src/services/stripe.service.ts",
+            "libraries/nestjs-libraries/src/services/payment/payment.service.ts"
+          ]
+        },
+        {
+          "text": "applyCoupon compares body.value with < and > only; a non-number would pass, which the AdminApplyCouponDto (@IsNumber, @Min(1)) and the superadmin check in billing.controller.ts:264 prevent, so keep calling it only through that DTO.",
+          "files": [
+            "libraries/nestjs-libraries/src/services/stripe.service.ts",
+            "libraries/nestjs-libraries/src/dtos/billing/admin.apply.coupon.dto.ts"
+          ]
+        },
+        {
+          "text": "Local uploads are served and removed relative to the upload directory; local.storage.ts resolves paths before comparing with the base, and nginx serves /uploads/ with a sandbox CSP; keep both when adding storage code.",
+          "files": [
+            "libraries/nestjs-libraries/src/upload/local.storage.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lib-helpers-react",
+      "title": "Shared helpers (auth, post-content sanitiser, custom fetch, swagger) and React shared libraries (forms, toaster, translation, Sentry)",
+      "files": [
+        "libraries/helpers/**",
+        "libraries/react-shared-libraries/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ],
+      "risks": [
+        {
+          "text": "sanitizePostContent is shared by the public preview page, posts.service and create.post.dto, and postContentPlainText must match the frontend textContent offsets; the block-tag-to-paragraph rewrite at line 43 had to be made linear on unclosed tags (history 2ded21d, 14e5a46), so avoid nested-quantifier regexes and re-check long unclosed input.",
+          "files": [
+            "libraries/helpers/src/utils/sanitize.post.content.ts"
+          ]
+        },
+        {
+          "text": "The img hook is registered with DOMPurify.addHook, which is process-wide, so it affects every other DOMPurify use in the same process.",
+          "files": [
+            "libraries/helpers/src/utils/sanitize.post.content.ts"
+          ]
+        },
+        {
+          "text": "AuthService.verifyJWT calls verify(token, JWT_SECRET) without pinning algorithms, hashPassword uses synchronous bcrypt hashSync (cost 10, blocks the event loop, silently ignores bytes past 72), and fixedEncryption derives its key from JWT_SECRET: changing JWT_SECRET invalidates sessions and anything encrypted with it.",
+          "files": [
+            "libraries/helpers/src/auth/auth.service.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "infra",
+      "title": "CI workflows, Jenkins pipelines, Docker/nginx/compose setup and Claude settings",
+      "files": [
+        ".github/**",
+        "Jenkins/**",
+        "var/**",
+        "dynamicconfig/**",
+        ".claude/**",
+        ".devcontainer/**",
+        "Dockerfile.dev",
+        "docker-compose.dev.yaml",
+        "docker-compose.yaml",
+        "railway.toml"
+      ],
+      "checks": [],
+      "risks": [
+        {
+          "text": "Dockerfile.dev builds everything with `pnpm run build` and starts nginx plus pm2; pm2-run runs `prisma db push` on every start, so a schema change ships with the container start, not a migration.",
+          "files": [
+            "Dockerfile.dev",
+            "docker-compose.yaml"
+          ]
+        },
+        {
+          "text": ".claude/settings.json denies reading or editing .env; do not loosen it, and keep .env.example updated for new variables.",
+          "files": [
+            ".claude/settings.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "root",
+      "title": "Top-level config: package.json (scripts and every dependency), workspace, tsconfig, jest, env example and repo docs",
+      "files": [
+        ".coderabbit.yaml",
+        ".dockerignore",
+        ".env.example",
+        ".eslintignore",
+        ".gitignore",
+        ".gitmodules",
+        ".npmrc",
+        ".prettierignore",
+        ".prettierrc",
+        "CCLA.md",
+        "CLAUDE.md",
+        "CODE_OF_CONDUCT.md",
+        "CONTRIBUTING.md",
+        "ICLA.md",
+        "LICENSE",
+        "README.md",
+        "SECURITY.md",
+        "chatgpt-app-submission.json",
+        "eslint.config.mjs",
+        "i18n.json",
+        "i18n.lock",
+        "jest.config.ts",
+        "jest.preset.js",
+        "package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "sonar-project.properties",
+        "tsconfig.base.json",
+        "tsconfig.json",
+        "version.txt"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ],
+      "risks": [
+        {
+          "text": "Root package.json holds all dependencies for every app and its scripts drive the build, pm2 start and Prisma (prisma-db-push, prisma-reset --force-reset); a script change here changes production start-up and can reset data (history 3f848cc \"fix: remove data loss\").",
+          "files": [
+            "package.json"
+          ]
+        },
+        {
+          "text": "`pnpm test` runs jest with getJestProjects() but the repository has no spec files, so a green run proves nothing; rely on the build.",
+          "files": [
+            "jest.config.ts",
+            "package.json"
+          ]
+        }
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "id": "workflow-files-immutable",
+      "rule": "Never edit a workflow file already on origin/main: add a new versioned workflow file, export it in workflows/index.ts and point every caller at it.",
+      "why": "Changing a workflow fails all its in-flight activities on replay, so scheduled posts break for users.",
+      "files": [
+        "apps/orchestrator/src/workflows/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build:orchestrator",
+          "why": "compiles the workflow bundle and its exports"
+        }
+      ]
+    },
+    {
+      "id": "activity-params-frozen",
+      "rule": "Do not change activity parameters; add a new activity and a new workflow version that uses it.",
+      "why": "Workflows in flight call the old signature and fail.",
+      "files": [
+        "apps/orchestrator/src/activities/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build:orchestrator",
+          "why": "compiles activities against the workflows that call them"
+        }
+      ]
+    },
+    {
+      "id": "generic-code-no-provider-branches",
+      "rule": "No provider-specific logic (if facebook / identifier ===) in generic files; add an optional member to SocialProvider and implement it in the provider.",
+      "why": "Generic backend, orchestrator and frontend code grows per-network branches that break the other 28 channels.",
+      "files": [
+        "apps/**",
+        "libraries/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ]
+    },
+    {
+      "id": "check-post-status-completed",
+      "rule": "After finalizePost has made changes, checkPostStatus must return completed, never ready, unless the change is idempotent.",
+      "why": "Temporal retries re-run finalizePost and publish the post twice (social.integrations.interface.ts:140).",
+      "files": [
+        "libraries/nestjs-libraries/src/integrations/social/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ]
+    },
+    {
+      "id": "media-through-helpers",
+      "rule": "Providers read media only through SocialAbstract helpers (localMediaPath, SSRF-safe axios or dispatcher), never raw fs or fetch on a user path.",
+      "why": "A user-controlled path reads arbitrary files on the worker or reaches internal hosts.",
+      "files": [
+        "libraries/nestjs-libraries/src/integrations/social/**",
+        "libraries/nestjs-libraries/src/integrations/social.abstract.ts"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ]
+    },
+    {
+      "id": "webhook-code-never-throws",
+      "rule": "Code reached from Stripe or RevenueCat webhooks (SubscriptionService create/modify/delete, StripeService handlers) must not throw: catch and log DB and provider failures.",
+      "why": "A throwing webhook leaves billing half applied for a paying customer and the provider keeps retrying.",
+      "files": [
+        "libraries/nestjs-libraries/src/database/prisma/subscriptions/**",
+        "libraries/nestjs-libraries/src/services/stripe.service.ts",
+        "libraries/nestjs-libraries/src/services/payment/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ]
+    },
+    {
+      "id": "subscription-provider-ownership",
+      "rule": "Customer-keyed subscription changes must go through isManagedBy and only touch rows owned by the calling payment provider.",
+      "why": "Stripe and store (RevenueCat) subscriptions would overwrite each other.",
+      "files": [
+        "libraries/nestjs-libraries/src/database/prisma/subscriptions/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ]
+    },
+    {
+      "id": "no-raw-credential-rows",
+      "rule": "Never return a raw Prisma row of Integration or User from a controller, and give repository writes on them a narrow select.",
+      "why": "Access and refresh tokens or password hashes leak in API responses.",
+      "files": [
+        "apps/backend/src/**",
+        "libraries/nestjs-libraries/src/database/prisma/**/*.repository.ts"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ]
+    },
+    {
+      "id": "tools-call-checkauth",
+      "rule": "Every MCP/agent tool must call checkAuth before reading the organization, and be listed in tool.list.ts.",
+      "why": "Without it the tool runs with no or a stale tenant and can read another organization's data.",
+      "files": [
+        "libraries/nestjs-libraries/src/chat/tools/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ]
+    },
+    {
+      "id": "prisma-only-pnpm-only",
+      "rule": "Use Prisma (no raw SQL) and pnpm only; backend changes go DTO > Controller > Service > Repository.",
+      "why": "Production has many users; raw SQL and shortcuts bypass the layers other code relies on and the lock file breaks with other package managers.",
+      "files": [
+        "apps/backend/**",
+        "libraries/nestjs-libraries/src/database/**",
+        "package.json"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run build",
+          "why": "CI build step in .github/workflows/build.yml: typechecks and compiles backend, frontend and orchestrator with the shared libraries"
+        }
+      ]
+    }
+  ],
+  "ignore": [
+    "reports/**"
+  ],
+  "hotspots": [
+    {
+      "file": "apps/orchestrator/src/workflows/post-workflows/post.workflow.v1.0.1.ts",
+      "symbol": "postWorkflowV101",
+      "line": 51,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "apps/orchestrator/src/workflows/post-workflows/post.workflow.v1.0.2.ts",
+      "symbol": "postWorkflowV102",
+      "line": 51,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "apps/orchestrator/src/workflows/post-workflows/post.workflow.v1.0.3.ts",
+      "symbol": "postWorkflowV103",
+      "line": 51,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "apps/orchestrator/src/workflows/post-workflows/post.workflow.v1.0.4.ts",
+      "symbol": "postWorkflowV104",
+      "line": 51,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "apps/orchestrator/src/workflows/post-workflows/post.workflow.v1.0.5.ts",
+      "symbol": "postWorkflowV105",
+      "line": 52,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "apps/orchestrator/src/workflows/post-workflows/post.workflow.v1.0.6.ts",
+      "symbol": "postWorkflowV106",
+      "line": 85,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "apps/orchestrator/src/workflows/post-workflows/post.workflow.v1.0.7.ts",
+      "symbol": "postWorkflowV107",
+      "line": 112,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "apps/orchestrator/src/workflows/post-workflows/post.workflow.v1.0.8.ts",
+      "symbol": "postWorkflowV108",
+      "line": 116,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "apps/orchestrator/src/workflows/post-workflows/post.workflow.v1.0.9.ts",
+      "symbol": "postWorkflowV109",
+      "line": 106,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "apps/orchestrator/src/workflows/post-workflows/post.workflow.v1.1.0.ts",
+      "symbol": "postWorkflowV110",
+      "line": 106,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "apps/orchestrator/src/workflows/post-workflows/post.workflow.v1.1.1.ts",
+      "symbol": "postWorkflowV111",
+      "line": 119,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "apps/orchestrator/src/workflows/post-workflows/post.workflow.v1.1.2.ts",
+      "symbol": "postWorkflowV112",
+      "line": 120,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "apps/orchestrator/src/workflows/refresh.token.workflow.ts",
+      "symbol": "refreshTokenWorkflow",
+      "line": 14,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "apps/orchestrator/src/workflows/streak.workflow.ts",
+      "symbol": "streakWorkflow",
+      "line": 19,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "apps/orchestrator/src/workflows/streak.workflow.ts",
+      "symbol": "streakWorkflowV2",
+      "line": 73,
+      "labels": [
+        "time"
+      ],
+      "rules": [
+        "workflow-files-immutable"
+      ],
+      "note": "Depends on the clock"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/database/prisma/subscriptions/subscription.repository.ts",
+      "symbol": "getCustomerIdByOrgId",
+      "line": 70,
+      "labels": [
+        "money",
+        "db-read"
+      ],
+      "rules": [
+        "subscription-provider-ownership",
+        "webhook-code-never-throws",
+        "no-raw-credential-rows"
+      ],
+      "note": "Handles amounts, queries the database"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/database/prisma/subscriptions/subscription.repository.ts",
+      "symbol": "deleteSubscriptionByCustomerId",
+      "line": 91,
+      "labels": [
+        "money"
+      ],
+      "rules": [
+        "subscription-provider-ownership",
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/database/prisma/subscriptions/subscription.repository.ts",
+      "symbol": "updateCustomerId",
+      "line": 111,
+      "labels": [
+        "money"
+      ],
+      "rules": [
+        "subscription-provider-ownership",
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/database/prisma/subscriptions/subscription.repository.ts",
+      "symbol": "getSubscriptionByCustomerId",
+      "line": 142,
+      "labels": [
+        "money",
+        "db-read"
+      ],
+      "rules": [
+        "subscription-provider-ownership",
+        "webhook-code-never-throws",
+        "no-raw-credential-rows"
+      ],
+      "note": "Handles amounts, queries the database"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/database/prisma/subscriptions/subscription.repository.ts",
+      "symbol": "getOrganizationByCustomerId",
+      "line": 152,
+      "labels": [
+        "money",
+        "db-read"
+      ],
+      "rules": [
+        "subscription-provider-ownership",
+        "webhook-code-never-throws",
+        "no-raw-credential-rows"
+      ],
+      "note": "Handles amounts, queries the database"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/database/prisma/subscriptions/subscription.service.ts",
+      "symbol": "refundCredits",
+      "line": 365,
+      "labels": [
+        "money"
+      ],
+      "rules": [
+        "subscription-provider-ownership",
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/database/prisma/subscriptions/subscription.service.ts",
+      "symbol": "checkCredits",
+      "line": 400,
+      "labels": [
+        "money"
+      ],
+      "rules": [
+        "subscription-provider-ownership",
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social.abstract.ts",
+      "symbol": "mediaSize",
+      "line": 320,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social.abstract.ts",
+      "symbol": "checkScopes",
+      "line": 697,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/bluesky.provider.ts",
+      "symbol": "startVideoUpload",
+      "line": 78,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/dev.to.provider.ts",
+      "symbol": "tags",
+      "line": 99,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/dev.to.provider.ts",
+      "symbol": "organizations",
+      "line": 112,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/discord.provider.ts",
+      "symbol": "refreshToken",
+      "line": 26,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/discord.provider.ts",
+      "symbol": "channels",
+      "line": 122,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/discord.provider.ts",
+      "symbol": "changeNickname",
+      "line": 266,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/dribbble.provider.ts",
+      "symbol": "refreshToken",
+      "line": 54,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/dribbble.provider.ts",
+      "symbol": "teams",
+      "line": 94,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/facebook.provider.ts",
+      "symbol": "pages",
+      "line": 394,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/facebook.provider.ts",
+      "symbol": "fetchPaginated",
+      "line": 398,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/facebook.provider.ts",
+      "symbol": "fetchPageInformation",
+      "line": 456,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/facebook.provider.ts",
+      "symbol": "searchPaginated",
+      "line": 461,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/facebook.provider.ts",
+      "symbol": "fbVideoStatus",
+      "line": 540,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/gmb.provider.ts",
+      "symbol": "pages",
+      "line": 207,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/hashnode.provider.ts",
+      "symbol": "publications",
+      "line": 122,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/instagram.provider.ts",
+      "symbol": "pages",
+      "line": 551,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/instagram.provider.ts",
+      "symbol": "fetchPaginated",
+      "line": 556,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/instagram.provider.ts",
+      "symbol": "music",
+      "line": 1301,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/instagram.standalone.provider.ts",
+      "symbol": "refreshToken",
+      "line": 82,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/kick.provider.ts",
+      "symbol": "refreshToken",
+      "line": 41,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/linkedin.page.provider.ts",
+      "symbol": "companies",
+      "line": 140,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/nostr.provider.ts",
+      "symbol": "publish",
+      "line": 105,
+      "labels": [
+        "queue"
+      ],
+      "rules": [
+        "check-post-status-completed",
+        "media-through-helpers"
+      ],
+      "note": "Enqueues or retries work"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/integrations/social/telegram.provider.ts",
+      "symbol": "getBotId",
+      "line": 85,
+      "labels": [
+        "queue",
+        "authz"
+      ],
+      "rules": [
+        "check-post-status-completed",
+        "media-through-helpers",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Enqueues or retries work, checks a role"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/services/payment/payment.provider.interface.ts",
+      "symbol": "getInvoices",
+      "line": 107,
+      "labels": [
+        "money"
+      ],
+      "rules": [
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/services/payment/payment.provider.interface.ts",
+      "symbol": "PaymentProvider",
+      "line": 201,
+      "labels": [
+        "money"
+      ],
+      "rules": [
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts; called from 2 other files read"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/services/payment/payment.provider.manager.ts",
+      "symbol": "getProvider",
+      "line": 18,
+      "labels": [
+        "money"
+      ],
+      "rules": [
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/services/payment/payment.provider.manager.ts",
+      "symbol": "getDefaultProvider",
+      "line": 36,
+      "labels": [
+        "money"
+      ],
+      "rules": [
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/services/payment/payment.service.ts",
+      "symbol": "getDefaultProvider",
+      "line": 29,
+      "labels": [
+        "money"
+      ],
+      "rules": [
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/services/payment/payment.service.ts",
+      "symbol": "getDefaultProviderName",
+      "line": 33,
+      "labels": [
+        "money"
+      ],
+      "rules": [
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/services/payment/payment.service.ts",
+      "symbol": "getSubscription",
+      "line": 39,
+      "labels": [
+        "money"
+      ],
+      "rules": [
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/services/payment/providers/revenuecat.provider.ts",
+      "symbol": "getActiveSubscription",
+      "line": 121,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "webhook-code-never-throws",
+        "generic-code-no-provider-branches"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/services/stripe.service.ts",
+      "symbol": "createOrGetCustomer",
+      "line": 311,
+      "labels": [
+        "money",
+        "payments-api"
+      ],
+      "rules": [
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts, calls a payment provider"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/services/stripe.service.ts",
+      "symbol": "getPackages",
+      "line": 331,
+      "labels": [
+        "money",
+        "payments-api"
+      ],
+      "rules": [
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts, calls a payment provider"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/services/stripe.service.ts",
+      "symbol": "prorate",
+      "line": 355,
+      "labels": [
+        "money",
+        "payments-api"
+      ],
+      "rules": [
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts, calls a payment provider"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/services/stripe.service.ts",
+      "symbol": "getCustomerSubscriptions",
+      "line": 438,
+      "labels": [
+        "money",
+        "payments-api"
+      ],
+      "rules": [
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts, calls a payment provider"
+    },
+    {
+      "file": "libraries/nestjs-libraries/src/services/stripe.service.ts",
+      "symbol": "setToCancel",
+      "line": 466,
+      "labels": [
+        "money",
+        "payments-api"
+      ],
+      "rules": [
+        "webhook-code-never-throws"
+      ],
+      "note": "Handles amounts, calls a payment provider"
+    }
+  ]
+}
